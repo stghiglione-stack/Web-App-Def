@@ -7,18 +7,14 @@ st.set_page_config(page_title="Universal EV Planner PRO", layout="wide", page_ic
 
 # --- FUNZIONE PER PULIRE TUTTI I CAMPI ---
 def reset_form():
-    for key in st.session_state.keys():
+    for key in list(st.session_state.keys()):
         del st.session_state[key]
     st.rerun()
 
-# --- GESTIONE STATO PER AGGIORNAMENTO AUTOMATICO ---
-if 'casa_indirizzo' not in st.session_state:
-    st.session_state['casa_indirizzo'] = "Genova, Italia"
-
 # --- SIDEBAR ---
 st.sidebar.header("1. Punto di Partenza (Casa)")
-casa_input = st.sidebar.text_input("Indirizzo di casa/partenza:", value=st.session_state['casa_indirizzo'])
-st.session_state['casa_indirizzo'] = casa_input
+# Usiamo una chiave specifica per la sidebar
+casa_input = st.sidebar.text_input("Indirizzo di casa/partenza:", value="Genova, Italia", key="casa_sidebar")
 
 st.sidebar.header("2. Configurazione Auto")
 modello_auto = st.sidebar.text_input("Modello Auto:", "Ford Puma Gen-E")
@@ -40,9 +36,17 @@ dati_input = []
 for g in giorni:
     with st.expander(f"📍 {g}"):
         c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-        partenza = c1.text_input(f"Punto di Partenza", value=st.session_state['casa_indirizzo'], key=f"start_{g}")
+        
+        # TRUCCO: Usiamo il valore della sidebar direttamente come default 'value'
+        # Se l'utente non scrive nulla nel campo del giorno, prenderà sempre l'aggiornamento dalla sidebar
+        partenza = c1.text_input(
+            f"Punto di Partenza", 
+            value=casa_input, 
+            key=f"start_{g}"
+        )
+        
         dest = c2.text_input(f"Destinazione", placeholder="Es: Savona, Italia", key=f"dest_{g}")
-        dist_stimata = c3.number_input("Km (Solo andata)", min_value=0, key=f"km_{g}") # Rimosso value=0 fisso per facilitare reset
+        dist_stimata = c3.number_input("Km (Solo andata)", min_value=0, key=f"km_{g}")
         ar = c4.checkbox("Andata e Ritorno", value=True, key=f"ar_{g}")
         
         km_effettivi = dist_stimata * 2 if ar else dist_stimata
@@ -73,14 +77,12 @@ for i in range(len(giorni)):
     
     azione = "✅ Batteria OK"
     info_ricarica = "-"
-    costo_ricarica = 0.0
     
     if livello_fine < energia_necessaria_sicurezza:
         azione = "⚡ RICARICA (80%)"
         target_80 = capacita_batteria * 0.8
         energia_da_reintegrare = max(0, target_80 - livello_fine)
-        costo_ricarica = energia_da_reintegrare * costo_kwh
-        totale_costo += costo_ricarica
+        totale_costo += energia_da_reintegrare * costo_kwh
         
         min_lenta = int((energia_da_reintegrare / 7) * 60 / 0.9)
         min_fast = int((energia_da_reintegrare / 50) * 60 / 0.9)
@@ -88,12 +90,13 @@ for i in range(len(giorni)):
         info_ricarica = f"7kW: {min_lenta}m | 50kW: {min_fast}m | >100kW: {min_ultra}m"
         livello_fine = target_80 
     
+    # Logica Mappa: A/R -> Cerca vicino a casa | Sola Andata -> Cerca a destinazione
     punto_ricerca = partenza_oggi if is_ar else dest_oggi
     if not punto_ricerca: punto_ricerca = "me"
     
-    filtro_ricerca = "colonnine ricarica auto elettrica" if provider_pref.lower() == "tutte" else f"colonnine ricarica auto elettrica {provider_pref}"
-    query_map = urllib.parse.quote(f"{filtro_ricerca} vicino a {punto_ricerca}")
-    map_link = f"https://www.google.com/maps/search/{query_map}"
+    filtro = "colonnine ricarica auto elettrica" if provider_pref.lower() == "tutte" else f"colonnine ricarica auto elettrica {provider_pref}"
+    query = urllib.parse.quote(f"{filtro} vicino a {punto_ricerca}")
+    map_link = f"https://www.google.com/maps/search/{query}"
     
     risultati.append({
         "Giorno": giorni[i],
@@ -106,21 +109,17 @@ for i in range(len(giorni)):
     })
     livello_batt_kwh = livello_fine
 
-# --- TABELLA RISULTATI ---
+# --- TABELLA E GRAFICO ---
 st.subheader("Tabella di Marcia")
 df = pd.DataFrame(risultati)
-
 def make_clickable(link):
-    if "Nessuno" in link: return "-"
-    return f'<a href="{link}" target="_blank">🔍 Trova Colonnine</a>'
-
+    return f'<a href="{link}" target="_blank">🔍 Trova Colonnine</a>' if "Nessuno" not in link else "-"
 df['Mappa'] = df['Mappa'].apply(make_clickable)
 st.write(df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-# --- ANALISI AMBIENTALE E GRAFICO ---
+# Metriche e Grafico
 tot_km = sum(d["km"] for d in dati_input)
-co2_sett = (tot_km * 120) / 1000 
-
+co2_sett = (tot_km * 120) / 1000
 st.divider()
 c1, c2, c3 = st.columns(3)
 c1.metric("Distanza Totale", f"{tot_km} km")
@@ -128,13 +127,8 @@ c2.metric("Spesa Energia (80%)", f"€ {totale_costo:.2f}")
 c3.metric("CO2 Risparmiata", f"{co2_sett:.2f} kg", "🌱")
 
 st.subheader("📊 Impatto Green nel Tempo")
-periodi = ['Settimana', 'Mese (est.)', 'Anno (est.)']
-valori_co2 = [co2_sett, co2_sett * 4.3, co2_sett * 52]
-
-fig = go.Figure(data=[go.Bar(x=periodi, y=valori_co2, text=[f"{v:.1f} kg" for v in valori_co2], textposition='auto', marker_color='#2ecc71')])
-fig.update_layout(title="Chili di CO2 risparmiati", template="plotly_white", height=400)
+fig = go.Figure(data=[go.Bar(x=['Settimana', 'Mese', 'Anno'], y=[co2_sett, co2_sett*4.3, co2_sett*52], marker_color='#2ecc71')])
 st.plotly_chart(fig, use_container_width=True)
 
 # --- PULSANTE DI RESET ---
-st.divider()
 st.button("🗑️ Pulisci tutti i dati", on_click=reset_form, use_container_width=True)
